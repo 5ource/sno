@@ -1,4 +1,7 @@
-from imports import *
+import numpy as np
+from matplotlib import pyplot as plt
+import datetime as dt
+import pandas as pd
 
 FT_2_M = 0.3048
 MARG_RES = 90   #meters
@@ -335,10 +338,10 @@ class station(object):
         return day.year  # month is 1 -> 10: water year is calendar year
 
 
-class basin(object):
-    def __init__(self, basin_name, basin_cdec_id):
-        self.name       = basin_name
-        self.cdec_id    = basin_cdec_id
+class geo_extent(object):
+    def __init__(self, extent_name, extent_id):
+        self.name       = extent_name
+        self.id         = extent_id
         self.stations   = {}    #list of station objects indexed by id
 
     def print_stations_info(self):
@@ -460,3 +463,8 @@ class basin(object):
                 except:
                     self.stations[k].active_by_wy[wy] =False
                     pass
+
+
+class basin(geo_extent):
+    def __init__(self, basin_name, basin_cdec_id):
+        super.__init__(self, basin_name, basin_cdec_id)
