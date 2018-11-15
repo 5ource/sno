@@ -2,27 +2,45 @@ import numpy as np
 from matplotlib import pyplot as plt
 import datetime as dt
 import pandas as pd
+import os
+from dateutil import parser
+
+STATION_TYPES = {
+    "Pillow"        :   0,
+    "Snow Course"   :   1,
+    "WSN"           :   2
+}
+
+STATION_TYPES_EXT = {
+    0:  "sp",
+    1:  "sc",
+    2:  "ws"
+}
 
 FT_2_M = 0.3048
 MARG_RES = 90   #meters
 
 class station(object):
-    def __init__(self, lat_lon, type=None, cdec_type_id=None, station_id=None, operator=None, elevation=None):
+    def __init__(self, lat_lon, station_type=None, cdec_type_id=None, station_id=None, operator=None, elevation=None):
         self.lat_lon        = lat_lon
-        self.type           = type
+        self.station_type   = station_type
         self.cdec_type_id   = cdec_type_id
         self.cdec_id        = station_id
         self.operator       = operator
         self.data           = {}
         self.active_by_wy   = {}  #if all False, station was retired
         self.elevation      = elevation #feet
+        self.rc             = None
         # data is a dict
         #   'yyyy': dict
         #               {
-        #                   PST date: value
+        #                   PST date: valuea
         #               }
     #user
     #ds :   tif_ds
+    def unique_id(self):
+        return self.cdec_id + STATION_TYPES_EXT[self.station_type]
+
     def isRetired(self):
         for v in self.active_by_wy.values():
             if v:
@@ -180,7 +198,7 @@ class station(object):
 
     def print_station_info(self):
         print "cdec_id  = ", self.cdec_id
-        print "type     = ", self.type
+        print "station type     = ", self.station_type
         print "lat, lon = ", self.lat_lon
         print "r, c     = ", self.rc
         print "active_by_wy = ", self.active_by_wy
@@ -203,20 +221,40 @@ class station(object):
 
     #private
     def isPillow(self):
-        return self.operator == "CA Dept of Water Resources/O & M"
+        return self.station_type == STATION_TYPES["Pillow"]
+        #return "Dept of Water Resources" in self.operator # == "CA Dept of Water Resources/O & M"
 
     def parse_daily(self, wy, df):
         self.data[wy] = {}
         for index, row in df.iterrows():
+            #print "DATE / TIME (PST) in row ", "DATE / TIME (PST)" in row
+            #print " DATE / TIME (PST) in row ", " DATE / TIME (PST)" in row
+            swe     = row.filter(regex='SNOW WC INCHES')[0]
+            datev   = row.filter(regex='TIME')[0]
+            try:
+                self.data[wy][(parser.parse(datev)).date()] = float(swe)
+            except Exception as e:
+                print "e = ", e
+                if swe == "--":
+                    self.data[wy][(parser.parse(datev)).date()] = np.nan
+                else:
+                    print "parse_daily Error = ", e
+                    print "     >>> index = ", index, "row = ", row
+                    exit(0)
+
+            continue
+            '''
             try:
                 self.data[wy][(parser.parse(row["DATE / TIME (PST)"])).date()] = float(row["SNOW WC INCHES"])
             except Exception as e:
+                print "e = ", e
                 if row["SNOW WC INCHES"] == "--":
                     self.data[wy][(parser.parse(row["DATE / TIME (PST)"])).date()] = np.nan
                 else:
                     print "parse_daily Error = ", e
                     print "     >>> index = ", index, "row = ", row
                     exit(0)
+            '''
 
     def parse_monthly(self, wy, df):
         self.data[wy] = {}
@@ -239,22 +277,27 @@ class station(object):
         #    return
         if not os.path.exists(fpath):
             os.mkdir(fpath)
-        fdest = fpath + str(wy) + "_" + self.cdec_id + ".csv"
+        fdest = fpath + str(wy) + "_" + self.unique_id() + ".csv"
         if not (os.path.isfile(fdest)):
-            if debug: print "downloading ", self.cdec_id, "data from cdec to ", fdest, "..."
+            if debug: print "downloading ", self.cdec_id, "data from cdec to ", fdest, "operator = ", self.operator
             if self.isPillow():    #if snow pillow
-                df = self.download_daily_CDEC(self.cdec_id, dt.date(year=wy, month=10, day=1), "1year", debug=0)
+                df = self.download_daily_CDEC(self.cdec_id, dt.date(year=wy, month=10, day=1), "1year", debug=debug)
                 if df is not None:
-                    df.to_csv(fdest)
+                    df.to_csv(fdest, encoding = 'utf-8')
                     self.active_by_wy[wy] = True
                 else:
                     self.active_by_wy[wy] = False
                     #self.active = False
                     return
             else:   #snow course
-                df = self.download_monthly_CDEC(self.cdec_id, dt.date(year=wy, month=10, day=1), "1year", debug=0)
+                df = self.download_monthly_CDEC(self.cdec_id, dt.date(year=wy, month=10, day=1), "1year", debug=debug)
                 if df is not None:
-                    df.to_csv(fdest)
+                    try:
+                        df.to_csv(fdest, encoding = 'utf-8')
+                    except Exception as e:
+                        print "populate_data Error e = ", e
+                        print "df = ", df
+                        exit(0)
                     self.active_by_wy[wy] = True
                 else:
                     #self.active = False
@@ -265,7 +308,11 @@ class station(object):
         if debug == 2:
             with pd.option_context('display.max_rows', None, 'display.max_columns', None):
                 print(df)
-        df = pd.read_csv(fdest)
+        try:
+            df = pd.read_csv(fdest)
+        except:
+            "populate_data ERROR: failed to read csv file: ", fdest
+            return
         if self.isPillow():
             self.parse_daily(wy, df)
         else:
@@ -283,7 +330,12 @@ class station(object):
         if debug: print wq
         #print wq
         #exit(0)
-        tables = pd.read_html(wq, header=0)[0]
+        try:
+            tables = pd.read_html(wq, header=0)[0]
+        except Exception as e:
+            print "download_daily_CDEC Error: ", e
+            print "     >>> no table found for query = ", wq
+            return None
         return tables[:-1]
 
     def download_monthly_CDEC(self, station_id, end_date, span, debug=0):
@@ -294,6 +346,7 @@ class station(object):
         #print wq
         wq = "http://cdec.water.ca.gov/dynamicapp/QueryMonthly?s=" + station_id + "&end=" + str(year) + "-" + \
         str(month).zfill(2) + "-" + str(day).zfill(2) + "&span=" + span
+        if debug: print wq
         #print wq
         #exit(0)
         try:
@@ -301,8 +354,8 @@ class station(object):
             #print tables
             #exit(0)
         except Exception as e:
-            print "download_monthly_CDEC Error: ", e
-            print "     >>> no table found for query = ", wq
+            print "download_monthly_CDEC ERROR e = ", e,
+            print " query = ", wq
             df = None
             pass
         return df
@@ -466,5 +519,4 @@ class geo_extent(object):
 
 
 class basin(geo_extent):
-    def __init__(self, basin_name, basin_cdec_id):
-        super.__init__(self, basin_name, basin_cdec_id)
+    pass

@@ -9,7 +9,7 @@ basins = ["Feather"]
 
 C_SERVER        = 0
 
-wys             = [2015, 2016, 2017]
+wys             = [2017, 2018] #[2015, 2016, 2017]
 
 DOWNLOADS       = "downloads/"
 OUTPUT          = "output/"
