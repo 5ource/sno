@@ -156,6 +156,13 @@ class station(object):
             for day in self.data[wy]:
                 if self.data[wy][day] < 1.0:
                     self.data[wy][day] = 0.0
+    #organizes them into water years
+    def fill_organize_wy_from_series(self, dates, values):
+        for d, v in zip(dates, values):
+            wy = self.water_year(d)
+            if wy not in self.data:
+                self.data[wy] = {}
+            self.data[wy][d] = v
 
     def fill_wy_from_series(self, wy, dates, values):
         for d, v in zip(dates, values):

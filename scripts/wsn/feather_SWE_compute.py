@@ -4,6 +4,11 @@ import numpy as np
 import datetime as dt
 from matplotlib import pyplot as plt
 import pandas as pd
+from confidential import wsn_coordinates_by_site
+import cPickle
+
+sys.path.append('../../')
+from objects import station, STATION_TYPES
 
 MAX_DEN = 0.65
 
@@ -83,8 +88,9 @@ ktl_eos_dis_date        = {
     12: [dt.date(2017, 6, 14),  dt.date(2018, 5, 12)],
 }
 
-eos_disappearance_date  = [bucks_eos_disappearance_date, grizzly_eos_dis_date, ktl_eos_dis_date]
-start_melt_date_per_site = [bkl_start_melt, grz_start_melt, ktl_start_melt]
+eos_disappearance_date      = [bucks_eos_disappearance_date, grizzly_eos_dis_date, ktl_eos_dis_date]
+start_melt_date_per_site    = [bkl_start_melt, grz_start_melt, ktl_start_melt]
+sites_coords                = [wsn_coordinates_by_site["BKL"], wsn_coordinates_by_site["GRZ"], wsn_coordinates_by_site["KTL"]]
 
 def get_index_from_date(date):
     return (date - ABS_START_DATE).days
@@ -136,7 +142,10 @@ def update_den_scale_time(den, sd, eos_date, start_melt, eos_date_pil):
 s = 0
 e = 3
 my_dpi = 100
-for site, sids, eos_date, start_melt in zip(sites[s:e], site_ids[s:e], eos_disappearance_date[s:e], start_melt_date_per_site[s:e]):
+
+stations = {}
+for site, sids, eos_date, start_melt, scoords in \
+        zip(sites[s:e], site_ids[s:e], eos_disappearance_date[s:e], start_melt_date_per_site[s:e], sites_coords):
     #we need density rate at pillow, not really
     #den_rate_pillow_wy = get_den_rate_pillow(dens[site], pillow_id[site], eos_date[pillow_id[site]], start_melt)
     #print "den_rate_pillow_wy = ", den_rate_pillow_wy
@@ -166,9 +175,13 @@ for site, sids, eos_date, start_melt in zip(sites[s:e], site_ids[s:e], eos_disap
             plt.plot(t, swe, label=site + "_swe_" + str(st))
             plt.axhline(y=0, color='k')
             #plt.plot(p_d_val[:, 0], p_d_val[:, 1], label=site + "_pillow")
-        #TODO: saving to file
-        #create time axis:
+        #TODO: create objects
+        latlon = scoords[st]
+        st_id = site.capitalize()+"ws"+str(st)
+        stations[st_id] = station(latlon, STATION_TYPES["WSN"], "SWE", st_id, "UC Berkeley")
+        stations[st_id].fill_organize_wy_from_series(t, swe)
 
+    cPickle.dump(stations, open("output/wsn_stations.cPickle", "wb"))
     plt.legend()
     plt.savefig("output/"+site + "_swe" +".png", dpi=my_dpi)
     plt.show()
