@@ -395,7 +395,7 @@ class geo_extent(object):
     def __init__(self, extent_name, extent_id):
         self.name       = extent_name
         self.id         = extent_id
-        self.stations   = {}    #list of station objects indexed by id
+        self.stations   = {}    #list of station objects indexed by unique id
 
     def print_stations_info(self):
         for sta in self.stations.itervalues():

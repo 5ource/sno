@@ -1,7 +1,8 @@
+import cPickle
+
+import confidential
 from funcDefines import *
 from settings import *
-import confidential
-import cPickle
 
 C_LOAD_META_CLASSIFY_STATIONS  =   0
 C_DOWNLOAD_PARSE_CDEC   =   1 #False
