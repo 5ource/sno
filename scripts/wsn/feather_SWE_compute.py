@@ -155,12 +155,20 @@ for site, sids, eos_date, start_melt in zip(sites[s:e], site_ids[s:e], eos_disap
             plt.plot(new_den)
             plt.show()
         #exit(0)
+        t = []
+        d = ABS_START_DATE
+        while d < ABS_END_DATE:
+            t.append(d)
+            d+=dt.timedelta(days=1)
         if 1:
             swe = [v * d if (d > 0 and v >= 0) else np.nan for (v, d) in zip(sd_st, new_den)]
-
-            plt.plot(swe, label=site + "_swe_" + str(st))
+            assert (len(t) == len(swe))
+            plt.plot(t, swe, label=site + "_swe_" + str(st))
             plt.axhline(y=0, color='k')
             #plt.plot(p_d_val[:, 0], p_d_val[:, 1], label=site + "_pillow")
+        #TODO: saving to file
+        #create time axis:
+
     plt.legend()
-    plt.savefig(site + "_swe" +".png", dpi=my_dpi)
+    plt.savefig("output/"+site + "_swe" +".png", dpi=my_dpi)
     plt.show()
