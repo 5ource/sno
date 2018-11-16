@@ -31,11 +31,15 @@ class station(object):
         self.active_by_wy   = {}  #if all False, station was retired
         self.elevation      = elevation #feet
         self.rc             = None
+        self.units          = ""
         # data is a dict
         #   'yyyy': dict
         #               {
         #                   PST date: valuea
         #               }
+    def force_active_by_wys(self):
+        for wy in self.data:
+            self.active_by_wy[wy] = True
     #user
     #ds :   tif_ds
     def unique_id(self):
@@ -156,8 +160,22 @@ class station(object):
             for day in self.data[wy]:
                 if self.data[wy][day] < 1.0:
                     self.data[wy][day] = 0.0
+
+    def convert_to_meters(self):
+        print self.unique_id(), "units = ", self.units
+        if self.units == "meters":
+            return
+        elif self.units == "inches":
+            print self.unique_id(), "converting inches to meters"
+            IN_2_M = 25.4
+            self.units = "meters"
+            for wy in self.data:
+                for k in self.data[wy]:
+                    self.data[wy][k] *= IN_2_M
+
     #organizes them into water years
-    def fill_organize_wy_from_series(self, dates, values):
+    def fill_organize_wy_from_series(self, dates, values, units="meters"):
+        self.units = units
         for d, v in zip(dates, values):
             wy = self.water_year(d)
             if wy not in self.data:
@@ -279,7 +297,8 @@ class station(object):
                     print wy, self.data[wy]
         return
 
-    def populate_data(self, wy, fpath, debug = 0):
+    def populate_data(self, wy, fpath, debug = 0, units="inches"):
+        self.units = units
         #if not self.active:
         #    return
         if not os.path.exists(fpath):
@@ -404,6 +423,18 @@ class geo_extent(object):
         self.id         = extent_id
         self.stations   = {}    #list of station objects indexed by unique id
 
+    #adds stations in stations_dict to self.stations
+    def add_stations(self, stations_dict):
+        c = 0
+        for k in stations_dict:
+            #check if station id already in self.stations
+            if k in self.stations:
+                print "add_stations FAILED: station ", k, "already in self.stations"
+                continue
+            self.stations[k] = stations_dict[k]
+            c+=1
+        print c, "stations added to ", self.name
+
     def print_stations_info(self):
         for sta in self.stations.itervalues():
             sta.print_station_info()
@@ -523,6 +554,11 @@ class geo_extent(object):
                 except:
                     self.stations[k].active_by_wy[wy] =False
                     pass
+
+    def convert_to_meters(self):
+        print self.name, "convert_to_meters"
+        for k in self.stations.keys():
+            self.stations[k].convert_to_meters()
 
 
 class basin(geo_extent):

@@ -7,12 +7,13 @@ TYPE = "SWE"
 basins = ["Feather"]
 #get cdec sensors locations
 
+
 C_SERVER        = 0
 
 wys             = [2017, 2018] #[2015, 2016, 2017]
 
-DOWNLOADS       = "downloads/"
-OUTPUT          = "output/"
+DOWNLOADS       = "cdec/downloads/"
+OUTPUT          = "cdec/output/"
 
 #local
 EXT_OUTPUT      = "/Volumes/Untitled/swe_maps/output/"
