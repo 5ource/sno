@@ -4,6 +4,7 @@ import datetime as dt
 import pandas as pd
 import os
 from dateutil import parser
+import scipy.stats as ss
 
 STATION_TYPES = {
     "Pillow"        :   0,
@@ -37,6 +38,7 @@ class station(object):
         #               {
         #                   PST date: valuea
         #               }
+
     def force_active_by_wys(self):
         for wy in self.data:
             self.active_by_wy[wy] = True
@@ -162,11 +164,11 @@ class station(object):
                     self.data[wy][day] = 0.0
 
     def convert_to_meters(self):
-        print self.unique_id(), "units = ", self.units
+        #print self.unique_id(), "units = ", self.units
         if self.units == "meters":
             return
         elif self.units == "inches":
-            print self.unique_id(), "converting inches to meters"
+            #print self.unique_id(), "converting inches to meters"
             IN_2_M = 25.4
             self.units = "meters"
             for wy in self.data:
@@ -232,6 +234,9 @@ class station(object):
             print "wy = ", wy, ":"
             print self.data[wy]
 
+    '''
+        returns [dates, values]
+    '''
     def get_time_series(self, wy):
         if not self.active_by_wy[wy]:
             return None
@@ -418,10 +423,240 @@ class station(object):
 
 
 class geo_extent(object):
-    def __init__(self, extent_name, extent_id):
+    def __init__(self, extent_name, extent_id, extent_ul_lr_latlon=None):
         self.name       = extent_name
         self.id         = extent_id
         self.stations   = {}    #list of station objects indexed by unique id
+        self.extent = extent_ul_lr_latlon   #_ul_lr_latlon
+
+    '''
+        stype from STATION_TYPES
+    '''
+    def get_stations_by_type(self, stype):
+        ids = []
+        for id in self.stations.keys():
+            if self.stations[id].station_type == stype:
+                ids.append(id)
+        return ids
+
+    '''
+        get station data series
+    '''
+    def get_stations_data_time_series_per_wy(self, station_ids, wy):
+        stations_tseries_data = []
+        for sid in station_ids:
+            dates_data = self.stations[sid].get_time_series(wy)
+            stations_tseries_data.append(dates_data[1])
+        if len(stations_tseries_data) > 0:
+            return (dates_data[0], stations_tseries_data)
+        else:
+            return None
+
+    def exclude(self, ids, xclude_ids):
+        for id in xclude_ids:
+            if id in ids:
+                ids.remove(id)
+
+    def get_site_mean(self, wy_query, enforce_wys, pct_bad=10, n_months=7):
+        tspan = range(60, 60 + n_months * 30)
+        xclude_ids = []
+        wsn_ids = self.get_stations_by_type(STATION_TYPES["WSN"])
+        for id in wsn_ids:  # xclude those with few measurements < 70% during [december - april] period
+            for wy in enforce_wys:
+                time_axis, wsn_data = self.get_stations_data_time_series_per_wy([id], wy)
+                wsn_data = wsn_data[0]
+                if sum(np.isnan(np.array(wsn_data)[tspan])) > pct_bad / 100.0 * (
+                    n_months * 30):  # more than 70% bad readings
+                    xclude_ids.append(id)
+                    break
+        print "xclude_ids = ", xclude_ids
+        self.exclude(wsn_ids, xclude_ids)
+        #print "wsn_ids, wy = ", wsn_ids, wy
+        time_axis, wsn_data = self.get_stations_data_time_series_per_wy(wsn_ids, wy_query)
+        return np.nanmean(wsn_data) #average over all stations in site
+
+    '''
+        used in paper for inter-1km2-site inter-year spatial stationarity
+        returns pandas table node_id / rankWY1, rankWY2, deltaRank   and  node_id / %devWY1, %devWY2 ....
+    '''
+    def get_rank_temp_mean_site_aggregated(self, wys, other_sites_extents):
+        cols_by_wy = {}
+        cols_by_wy[" ids"] = [self.name] + [site.name for site in other_sites_extents]
+        for wy in wys:
+            means_sites = []
+            for site in ([self] + other_sites_extents):
+                means_sites.append(site.get_site_mean(wy, enforce_wys=wys, pct_bad=50))
+            print "wy means_sites = ", wy, means_sites
+            cols_by_wy["rank "+ str(wy)] = np.array(ss.rankdata(means_sites)).astype(int)
+            mean_of_means = np.mean(means_sites)
+            dev_from_mom = []
+            for site, ms in zip(([self] + other_sites_extents), means_sites):
+                dev_from_mom.append(ms - mean_of_means)
+            norm_dev_from_mom = np.round(np.array(dev_from_mom) / np.nansum(np.abs(dev_from_mom)) * 100.0, 1)
+            cols_by_wy['% '+ str(wy) ] = norm_dev_from_mom
+            print "cols_by_wy = ", cols_by_wy
+
+        cols_by_wy["rank delta(18-17)"] = cols_by_wy["rank " + str(2018)] - cols_by_wy["rank " + str(2017)]
+        cols_by_wy["% delta(18-17)"] = cols_by_wy["% " + str(2018)] - cols_by_wy["% " + str(2017)]
+
+        df = pd.DataFrame(cols_by_wy)
+        return df
+
+    '''
+        used in paper for intra-1km2 inter-year spatial stationarity
+        returns pandas table node_id / rankWY1, rankWY2, deltaRank
+    '''
+    def get_rank_temp_mean(self, wys, pct_bad=10):
+        n_months = 7 # december to june
+        tspan = range(60, 60 + n_months * 30)
+        xclude_ids = []
+        wsn_ids = self.get_stations_by_type(STATION_TYPES["WSN"])
+        for id in wsn_ids:  # xclude those with few measurements < 70% during [december - april] period
+            for wy in wys:
+                time_axis, wsn_data = self.get_stations_data_time_series_per_wy([id], wy)
+                wsn_data = wsn_data[0]
+                if sum(np.isnan(np.array(wsn_data)[tspan])) > pct_bad / 100.0 * (n_months * 30):  # more than 70% bad readings
+                    xclude_ids.append(id)
+                    break
+        self.exclude(wsn_ids, xclude_ids)
+        cols_by_wy = {}
+        cols_by_wy["ids"] = wsn_ids
+        for wy in wys:
+            time_axis, wsn_data = self.get_stations_data_time_series_per_wy(wsn_ids, wy)
+            #wsn_mean = np.nanmean(wsn_data, 0)
+            station_means = np.nanmean(np.array(wsn_data)[:,tspan],axis=1)
+            cols_by_wy[str(wy) + " rank"] = np.array(ss.rankdata(station_means)).astype(int)
+            print "wy = ", wy, "wsn_ids = ", wsn_ids
+            print "station_means = ", station_means
+            #import scipy.stats as ss
+            import scipy.stats as ss
+            print "rank= ", ss.rankdata(station_means)
+            #exit(0)
+
+        cols_by_wy["Delta(18-17)"] = cols_by_wy[str(2018) + ' rank'] - cols_by_wy[str(2017) + ' rank']
+        # convert to table
+        df = pd.DataFrame(cols_by_wy)
+        return df
+
+    '''
+        used in paper for intra-1km2 inter-year spatial stationarity
+        returns pandas table node_id / %devWY1, %devWY2 ....
+    '''
+    def get_normalized_temp_mean_dev_from_wsn_mean(self, wys, pct_bad=10):
+        n_months = 7  # december to june
+        tspan = range(60,60 + n_months * 30)   #december to june
+        xclude_ids = []
+        wsn_ids = self.get_stations_by_type(STATION_TYPES["WSN"])
+        for id in wsn_ids:  # xclude those with few measurements < 70% during [december - april] period
+            for wy in wys:
+                time_axis, wsn_data = self.get_stations_data_time_series_per_wy([id], wy)
+                wsn_data = wsn_data[0]
+                if sum(np.isnan(np.array(wsn_data)[tspan])) > pct_bad / 100.0 * (n_months * 30):  # more than 70% bad readings
+                    xclude_ids.append(id)
+                    break
+        self.exclude(wsn_ids, xclude_ids)
+        cols_by_wy={}
+        cols_by_wy["ids"] = wsn_ids
+        for wy in wys:
+            time_axis, wsn_data = self.get_stations_data_time_series_per_wy(wsn_ids, wy)
+            wsn_mean = np.nanmean(wsn_data, 0)
+            wsn_mean_dev = []
+            for row in wsn_data:
+                wsn_mean_dev.append(np.nanmean([a - b for a, b in zip(list(np.array(row)[tspan]), list(np.array(wsn_mean)[tspan]))]))
+            norm_wsn_mean = np.round(np.array(wsn_mean_dev) / np.nansum(np.abs(wsn_mean_dev), axis=0) * 100, 1)
+            cols_by_wy[str(wy) + ' %'] = norm_wsn_mean
+        cols_by_wy["Delta(18-17)"] = cols_by_wy[str(2018) + ' %'] - cols_by_wy[str(2017) + ' %']
+        #convert to table
+        df = pd.DataFrame(cols_by_wy)
+        return df
+
+
+    def get_normalized_mean_delta_from_pillow(self, wys, xclude_ids=[], pct_bad = 40):
+        xclude_ids = []
+        wsn_ids = self.get_stations_by_type(STATION_TYPES["WSN"])
+        for id in wsn_ids:  #xclude those with few measurements < 70% during [december - april] period
+            for wy in wys:
+                time_axis, wsn_data = self.get_stations_data_time_series_per_wy([id], wy)
+                wsn_data = wsn_data[0]
+                if sum(np.isnan(wsn_data[60:60+5*30])) > pct_bad/100.0*(5*30): #more than 70% bad readings
+                    xclude_ids.append(id)
+                    break
+        print "to xclude_ids = ", xclude_ids
+        for wy in wys:
+            self.plot_normalized_delta_from_pillow(wy, xclude_ids)
+        return
+
+    def plot_normalized_delta_from_pillow(self, wy, xclude_ids=[]):
+        plt.figure()
+        wsn_ids = self.get_stations_by_type(STATION_TYPES["WSN"])
+        self.exclude(wsn_ids, xclude_ids)
+        sp_ids = self.get_stations_by_type(STATION_TYPES["Pillow"])
+        time_axis, wsn_data = self.get_stations_data_time_series_per_wy(wsn_ids, wy)
+        time_axis, sp_data = self.get_stations_data_time_series_per_wy(sp_ids, wy)
+        wsn_delta = []
+        for row in wsn_data:
+            wsn_delta.append([a - b for a, b in zip(row[60:60+5*30], sp_data[0][60:60+5*30])])
+        #print np.shape(wsn_delta)
+        #exit(0)
+        #print "before normalizing - ", wsn_delta
+        wsn_delta = np.array(wsn_delta)/np.nansum(np.abs(wsn_delta), axis=0)
+        wsn_delta = np.nanmean(wsn_delta, axis=1)
+        #print "after normalizing - ", wsn_delta
+        #exit(0)
+        #wsn_delta = wsn_delta.transpose()
+        plt.title(self.name + " " + str(wy))
+        for id, delta in zip(wsn_ids, wsn_delta):
+            print delta
+            plt.plot(time_axis, [delta]*len(time_axis), label=id)
+            #plt.plot(delta, label=id)
+        plt.legend()
+
+
+
+    def plot_pillow_vs_WSNs(self, wy, xclude_ids=[]):
+        wsn_ids = self.get_stations_by_type(STATION_TYPES["WSN"])
+        for id in xclude_ids:
+            if id in wsn_ids:
+                wsn_ids.remove(id)
+        #print wsn_ids
+        sc_ids  = self.get_stations_by_type(STATION_TYPES["Snow Course"])
+        sp_ids  = self.get_stations_by_type(STATION_TYPES["Pillow"])
+
+        time_axis, wsn_data = self.get_stations_data_time_series_per_wy(wsn_ids, wy)
+        #they should all have same time axis
+        wsn_mean = np.nanmean(wsn_data, 0)
+        print np.shape(wsn_data)
+        plt.figure()
+        plt.title(self.name + " " + str(wy))
+        #plt.plot(time_axis, np.nanmax(wsn_data, 0), label="max", color="black")
+        #for i in range(len(wsn_data)):
+        #    plt.plot(time_axis, wsn_data[i], color="grey", alpha=0.5)
+        #plt.plot(time_axis, np.nanmin(wsn_data, 0), label="min",  color="black")
+        plt.fill_between(time_axis, np.nanmin(wsn_data, 0), np.nanmax(wsn_data, 0), color="grey", alpha=0.5, label="wsn range")
+        time_axis, sp_data = self.get_stations_data_time_series_per_wy(sp_ids, wy)
+        plt.plot(time_axis, wsn_mean, color="blue", label="wsn mean")
+        plt.plot(time_axis, sp_data[0], color="red", label="pillow")
+
+        try:
+            time_axis, sc_data = self.get_stations_data_time_series_per_wy(sc_ids, wy)
+            plt.scatter(time_axis, sc_data[0], marker="x", color="red", label="course")
+        except:
+            pass
+
+        plt.legend()
+        return
+
+    def in_extent(self, latlon):
+        return latlon[0] < self.extent[0][0] and latlon[0] > self.extent[1][0] \
+               and abs(latlon[1]) < abs(self.extent[0][1]) and abs(latlon[1]) > abs(self.extent[1][1])
+
+    def add_stations_in_extent(self, stations_dict):
+        c = 0
+        for k in stations_dict:
+            if self.in_extent(stations_dict[k].lat_lon):
+                self.stations[k] = stations_dict[k]
+                c+=1
+        print c, "stations added to ", self.name
 
     #adds stations in stations_dict to self.stations
     def add_stations(self, stations_dict):
@@ -444,7 +679,8 @@ class geo_extent(object):
         for sta in self.stations.itervalues():
             if only_pillows and not sta.isPillow():
                 continue
-            series[sta.cdec_id] = sta.get_time_series(wy)
+            #series[sta.cdec_id] = sta.get_time_series(wy)
+            series[sta.unique_id()] = sta.get_time_series(wy)
         return series
 
     def get_stations_ids(self):
@@ -507,7 +743,10 @@ class geo_extent(object):
             key_dt_val = self.get_stations_time_series_data(wy, only_pillows=only_pillows)
             for key in key_dt_val.keys():
                 if key_dt_val[key] is not None:
-                    plt.plot( key_dt_val[key][0], key_dt_val[key][1], label=key)
+                    if key[-2:] == "sc": #snow courses
+                        plt.scatter(key_dt_val[key][0], key_dt_val[key][1], label=key)
+                    else:
+                        plt.plot( key_dt_val[key][0], key_dt_val[key][1], label=key)
             plt.legend()
             plt.show()
 
