@@ -4,7 +4,10 @@ import datetime as dt
 import pandas as pd
 import os
 from dateutil import parser
+from geoFunc import extract_rasterValues_at_latlons, latlons_to_rcs, extract_rasterValues_at_rcs
+import scipy
 import scipy.stats as ss
+from sklearn.linear_model import ElasticNet
 
 STATION_TYPES = {
     "Pillow"        :   0,
@@ -33,11 +36,54 @@ class station(object):
         self.elevation      = elevation #feet
         self.rc             = None
         self.units          = ""
+        self.features       = {}
         # data is a dict
         #   'yyyy': dict
         #               {
         #                   PST date: valuea
         #               }
+
+    #retrieve list of features by feat_name list
+    def get_features(self, feature_name_list):
+        features = []
+        for feat_name in feature_name_list:
+            features.append(self.features[feat_name])
+        return features
+
+    #store features from grids
+    def extract_features(self, grid_df_or_fname, feature_name, replace=False, extra_arg=None):
+        if not hasattr(self, 'features'):
+            self.features = {}
+        if feature_name in self.features and not replace:
+            return
+        if feature_name == "lat":   #exceptions for efficiency
+            self.features["lat"] = self.lat_lon[0]
+            return
+        if feature_name == "lon":   #exceptions for efficiency
+            self.features["lon"] = self.lat_lon[1]
+            return
+        if feature_name == "conv-canopy":  #exceptions for efficiency
+            rc = latlons_to_rcs([self.lat_lon], grid_df_or_fname)[0]
+            r = rc[0]
+            c = rc[1]
+            window = [[[r-1, c-1], [r-1, c], [r-1, c+1]],
+                      [[r, c-1], [r, c], [r, c+1]],
+                      [[r+1, c-1], [r+1, c], [r+1, c+1]]]
+            window = np.array(window)
+            print "window before", window
+            window = np.reshape(window, [9, 2])
+            values = extract_rasterValues_at_rcs(grid_df_or_fname, window)
+            values = np.reshape(values, [3, 3])
+            print "window after", window.reshape([3, 3, 2])
+            self.features["conv-canopy"] = np.sum(np.multiply(extra_arg, values))
+            return
+        if feature_name == "MargMonthMean":     #requires month of year
+            self.features[feature_name] = {}
+            for month in range(1, 13):
+                grid_df_or_fname_month = grid_df_or_fname  +  str(month) + ".tif"
+                self.features[feature_name][month] = extract_rasterValues_at_latlons(grid_df_or_fname_month, [self.lat_lon])[0]
+            return
+        self.features[feature_name] = extract_rasterValues_at_latlons(grid_df_or_fname, [self.lat_lon])[0]
 
     def force_active_by_wys(self):
         for wy in self.data:
@@ -429,6 +475,19 @@ class geo_extent(object):
         self.stations   = {}    #list of station objects indexed by unique id
         self.extent = extent_ul_lr_latlon   #_ul_lr_latlon
 
+    def get_features_table(self, feature_names):
+        col = {}
+        col["id"] = []
+        for fn in feature_names:
+            col[fn] = []
+        for id in self.stations.keys():
+            col["id"].append(id)
+            st_feat = self.stations[id].get_features(feature_names)
+            for fn, f in zip(feature_names, st_feat):
+                col[fn].append(f)
+        df = pd.DataFrame(col)
+        return df
+
     '''
         stype from STATION_TYPES
     '''
@@ -451,6 +510,128 @@ class geo_extent(object):
             return (dates_data[0], stations_tseries_data)
         else:
             return None
+
+    def extract_features_from_tif_to_stations(self, grid_df_or_fname, feature_name, replace=False, extra_arg=None):
+        for k in self.stations.keys():
+            self.stations[k].extract_features(grid_df_or_fname, feature_name, replace=replace, extra_arg=extra_arg)
+
+
+    '''
+        get only pillows &| wsn &| courses
+    '''
+    def get_station_ids_by_type(self, wanted_types, inside_extent=None):
+        ids = []
+        for id in self.stations.keys():
+            pass_type = False
+            pass_extent = False
+            if self.stations[id].station_type in wanted_types:
+                pass_type = True
+            if inside_extent is None:
+                pass_extent = True
+            elif inside_extent.in_extent(self.stations[id].lat_lon):
+                pass_extent = True
+            if pass_type and pass_extent:
+                ids.append(id)
+        return ids
+    '''
+        used in paper point 5 for explained variance of each feature
+        returns R2 series for water year given
+        min_pct_of_sensors: to perform the R2 regression analysis, otherwise append nan
+    '''
+    def get_explained_variances_R2(self, wy, feature_names, FEATURE_NAME_RANGE, min_pct_of_sensors=70,
+                                   station_types=[STATION_TYPES["WSN"], STATION_TYPES["Pillow"]], inside_extent=None
+                                  ):
+        #TODO: embed in new function - will be used for lasso
+        #TODO: get station ids by extent as well!
+        st_ids = self.get_station_ids_by_type(station_types, inside_extent=inside_extent)
+        #get station features
+        y_features    = []
+        to_drop_ids = []
+        #some stations will have bad features (ex: out of range), so drop their ids
+        for st_id in st_ids:
+            st_features = self.stations[st_id].get_features(feature_names)
+            # if all features good, append, otherwise keep id to drop later
+            all_f_good = False
+            for feat_n, f in zip(feature_names, st_features):
+                if feat_n not in ["MargMonthMean"]: #only Quality Check for static features #TODO for now
+                    #print st_id, f
+                    if f < FEATURE_NAME_RANGE[feat_n][0] or f > FEATURE_NAME_RANGE[feat_n][1]:
+                        print "bad feature ", feat_n, "at st_id = ", st_id
+                        to_drop_ids.append(st_id)
+                        break
+                all_f_good = True
+            if all_f_good:
+                y_features.append(st_features)
+        if 1:
+            print "to drop ids = ", to_drop_ids
+        #drop stations with bad features
+        st_ids = [st for st in st_ids if st not in to_drop_ids]
+        total_points = len(st_ids)
+        if 1:
+            print "clean features = ", y_features
+
+
+        d = dt.date(wy - 1, month=10, day=1)
+        end_d = dt.date(wy, month=10, day=1)
+
+        #TODO add column of ones for offset
+        explained_var = {}
+        for feat_n in feature_names:
+            explained_var[feat_n] = []
+        betas = {}
+        for feat_n in feature_names:
+            betas[feat_n] = []
+        mean_y = []
+        total_r2 = []
+        print "feature_names = ", feature_names
+        print "len(y_features) = ", len(y_features)
+        print "len(feature_names) = ", len(feature_names)
+        while d < end_d:
+            print "d = ", d
+            y = self.get_measurements(d, st_ids)
+            #TODO: check if %nan > 100 - min_pct_of_sensors
+            if 100*(np.sum(np.isnan(y)) + 0.0)/total_points > (100 - min_pct_of_sensors):
+                for feat_n in feature_names:
+                    explained_var[feat_n].append(np.nan)
+                    betas[feat_n].append(np.nan)
+                mean_y.append(np.nan)
+                total_r2.append(np.nan)
+            else:   #enough point to analyze
+                bad_stations_indexes = np.where(np.isnan(y))[0]
+                y = [y[i] for i in range(len(y)) if i not in bad_stations_indexes]
+                mean_y.append(np.mean(y))
+                elastic_X = []
+                for feat_n, findex in zip(feature_names, range(len(feature_names))):
+                    #kick bad measurements' features out
+                    current_feat = [f[findex] for f, i in zip(y_features, range(len(y_features))) if i not in bad_stations_indexes]
+                    if feat_n == "MargMonthMean":   #non-static monthly feature, get correct val
+                        current_feat = [f[d.month] for f in current_feat]
+                    #print "current_feat = ", current_feat
+                    x = current_feat
+                    print "shape x, y = ", np.shape(x), np.shape(y)
+                    x = [float(i) for i in x]
+                    elastic_X.append(x)
+                    #print feat_n, x
+                    slope, intercept, r_value, p_value, std_err = scipy.stats.linregress(x, y)
+                    explained_var[feat_n].append(r_value**2)
+                #exit(0)
+                #perform elastic net regression
+                X = np.array(elastic_X).transpose()
+                #need to standardize for regulariztion
+                if 1:
+                    from sklearn.preprocessing import StandardScaler
+                    scaler = StandardScaler()
+                    X = scaler.fit_transform(X)
+                regr = ElasticNet(random_state=0)
+                regr.fit(X, y)
+                #print regr.coef_
+                for feat_n, cff in zip(feature_names, regr.coef_):
+                    betas[feat_n].append(cff)
+                #print "features = ", feature_names
+                #print "coef = ", regr.coef_
+                total_r2.append(regr.score(X, y))
+            d += dt.timedelta(days=1)
+        return explained_var, mean_y, total_r2, betas
 
     def exclude(self, ids, xclude_ids):
         for id in xclude_ids:
@@ -529,7 +710,6 @@ class geo_extent(object):
             print "wy = ", wy, "wsn_ids = ", wsn_ids
             print "station_means = ", station_means
             #import scipy.stats as ss
-            import scipy.stats as ss
             print "rank= ", ss.rankdata(station_means)
             #exit(0)
 
